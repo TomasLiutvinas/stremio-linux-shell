@@ -60,10 +60,16 @@ fn main() -> ExitCode {
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
     let gettext_dir = match env::var("FLATPAK_ID") {
-        Ok(_) => GETTEXT_DIR_FLATPAK,
+        Ok(_) => std::path::PathBuf::from(GETTEXT_DIR_FLATPAK),
         // GETTEXT_DIR is where build.rs writes the catalogs. A system package installs them
         // elsewhere and sets STREMIO_LOCALEDIR (e.g. /usr/share/locale) at build time.
-        Err(_) => option_env!("STREMIO_LOCALEDIR").unwrap_or(env!("GETTEXT_DIR")),
+        Err(_) => env::var_os("STREMIO_LOCALEDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    option_env!("STREMIO_LOCALEDIR").unwrap_or(env!("GETTEXT_DIR")),
+                )
+            }),
     };
 
     gettextrs::bindtextdomain(GETTEXT_DOMAIN, gettext_dir).expect("Failed to bind text domain");

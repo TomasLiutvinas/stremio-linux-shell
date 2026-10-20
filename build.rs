@@ -34,11 +34,12 @@ fn setup_po() -> Result<()> {
 
             let mo_path = mo_dir.join(format!("{GETTEXT_DOMAIN}.mo"));
 
-            Command::new("msgfmt")
+            let status = Command::new("msgfmt")
                 .arg("-o")
                 .arg(mo_path)
                 .arg(path)
-                .spawn()?;
+                .status()?;
+            anyhow::ensure!(status.success(), "Failed to compile translation catalog");
         }
     }
 
