@@ -31,7 +31,7 @@ impl TryFrom<IpcEvent> for IpcMessageResponse {
                 args: None,
                 data: Some(json!({
                     "transport": {
-                        "properties": [[], ["", "shellVersion", "", VERSION]],
+                        "properties": [[], ["", "shellVersion", "", VERSION], ["", "nativeAssSubtitles", "", "true"], ["", "nativeInterfaceScale", "", "true"]],
                         "signals": [],
                         "methods": [["onEvent"]]
                     }
@@ -91,7 +91,10 @@ impl TryFrom<IpcEvent> for IpcMessageResponse {
                     "mpv-event-ended",
                     {
                         "reason": reason,
-                        "error": error,
+                        "error": error.map(|message| json!({
+                            "message": message,
+                            "critical": true,
+                        })),
                     }
                 ])),
             }),

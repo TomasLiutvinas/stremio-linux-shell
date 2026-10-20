@@ -2504,6 +2504,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "shellexpand"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
+dependencies = [
+ "dirs",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2599,7 +2608,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stremio-linux-shell"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -2623,6 +2632,7 @@ dependencies = [
  "mpris-server",
  "serde",
  "serde_json",
+ "shellexpand",
  "tokio",
  "tracing",
  "tracing-subscriber",

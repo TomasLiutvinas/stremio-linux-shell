@@ -1,22 +1,19 @@
-use std::{
-    cell::{OnceCell, RefCell},
-    rc::Rc,
-};
+use std::cell::RefCell;
+use std::{rc::Rc, sync::OnceLock};
 
-use gtk::glib::{self, subclass::prelude::*};
+use gtk::glib::JoinHandle;
+use gtk::glib::{self, subclass::Signal};
+use gtk::{glib::clone, prelude::*, subclass::prelude::*};
 use mpris_server::{Metadata, PlaybackStatus, Player};
 use tracing::error;
 
+use crate::app::config::{APP_ID, APP_NAME};
 use crate::spawn_local;
-
-type StatusCallback = Box<dyn Fn(bool)>;
-type RaiseCallback = Box<dyn Fn()>;
 
 #[derive(Default)]
 pub struct Mpris {
-    mpris: Rc<OnceCell<Player>>,
-    status_callback: Rc<RefCell<Option<StatusCallback>>>,
-    raise_callback: Rc<RefCell<Option<RaiseCallback>>>,
+    player: RefCell<Option<Rc<Player>>>,
+    task: RefCell<Option<JoinHandle<()>>>,
 }
 
 #[glib::object_subclass]
@@ -26,95 +23,120 @@ impl ObjectSubclass for Mpris {
     type ParentType = glib::Object;
 }
 
+impl ObjectImpl for Mpris {
+    fn signals() -> &'static [Signal] {
+        static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
+        SIGNALS.get_or_init(|| {
+            vec![
+                Signal::builder("paused")
+                    .param_types([bool::static_type()])
+                    .build(),
+                Signal::builder("raise").build(),
+            ]
+        })
+    }
+}
+
 impl Mpris {
-    pub fn start(&self, id: &'static str, name: &'static str) {
-        let mpris = self.mpris.clone();
-        let status_callback = self.status_callback.clone();
-        let raise_callback = self.raise_callback.clone();
+    pub fn start(&self) {
+        self.stop();
 
-        spawn_local!(async move {
-            let player = Player::builder(name)
-                .identity(name)
-                .desktop_entry(id)
-                .can_play(true)
-                .can_pause(true)
-                .can_raise(true)
-                .can_go_previous(false)
-                .can_go_next(false)
-                .build()
-                .await
-                .expect("Failed to start MPRIS server");
+        let object = self.obj();
 
-            if let Some(callback) = status_callback.borrow_mut().take() {
-                let callback = Rc::new(callback);
+        let emit_paused = clone!(
+            #[weak]
+            object,
+            move |paused: bool| {
+                object.emit_by_name::<()>("paused", &[&paused]);
+            }
+        );
 
-                let play_pause_callback = callback.clone();
+        let emit_raise = clone!(
+            #[weak]
+            object,
+            move || {
+                object.emit_by_name::<()>("raise", &[]);
+            }
+        );
+
+        let task = spawn_local!(clone!(
+            #[weak]
+            object,
+            async move {
+                let player = Player::builder(APP_NAME)
+                    .identity(APP_NAME)
+                    .desktop_entry(APP_ID)
+                    .can_play(true)
+                    .can_pause(true)
+                    .can_raise(true)
+                    .can_go_previous(false)
+                    .can_go_next(false)
+                    .build()
+                    .await
+                    .expect("Failed to start MPRIS server");
+
+                let emit = emit_paused.clone();
                 player.connect_play_pause(move |player| {
                     let paused = matches!(player.playback_status(), PlaybackStatus::Playing);
-                    play_pause_callback(paused);
+                    emit(paused);
                 });
 
-                let play_callback = callback.clone();
-                player.connect_play(move |_| play_callback(false));
+                let emit = emit_paused.clone();
+                player.connect_play(move |_| emit(false));
 
-                let pause_callback = callback.clone();
-                player.connect_pause(move |_| pause_callback(true));
+                let emit = emit_paused.clone();
+                player.connect_pause(move |_| emit(true));
 
-                player.connect_stop(move |_| callback(true));
+                let emit = emit_paused.clone();
+                player.connect_stop(move |_| emit(true));
+
+                player.connect_raise(move |_| emit_raise());
+
+                let player = Rc::new(player);
+                object.imp().player.replace(Some(player.clone()));
+
+                player.run().await;
             }
+        ));
 
-            if let Some(callback) = raise_callback.borrow_mut().take() {
-                player.connect_raise(move |_| callback());
-            }
+        self.task.replace(Some(task));
+    }
 
-            let player = mpris.get_or_init(|| player);
-            player.run().await;
-        });
+    pub fn stop(&self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+
+        self.player.replace(None);
     }
 
     pub fn set_status(&self, paused: bool) {
-        let mpris = self.mpris.clone();
-
-        spawn_local!(async move {
-            if let Some(mpris) = mpris.get() {
+        if let Some(player) = self.player.borrow().clone() {
+            spawn_local!(async move {
                 let status = match paused {
                     true => PlaybackStatus::Paused,
                     false => PlaybackStatus::Playing,
                 };
 
-                if let Err(e) = mpris.set_playback_status(status).await {
-                    error!("Failed to set mpris playback status: {e}");
+                if let Err(e) = player.set_playback_status(status).await {
+                    error!("Failed to set playback status: {e}");
                 }
-            }
-        });
+            });
+        }
     }
 
     pub fn set_metadata(&self, title: String, artist: Option<String>, art_url: Option<String>) {
-        let mpris = self.mpris.clone();
-
-        spawn_local!(async move {
-            if let Some(mpris) = mpris.get() {
+        if let Some(player) = self.player.borrow().clone() {
+            spawn_local!(async move {
                 let mut metadata = Metadata::new();
                 metadata.set_title(Some(title));
                 metadata.set_artist(Some(artist.map_or(vec![], |artist| vec![artist])));
                 metadata.set_art_url(art_url);
 
-                if let Err(e) = mpris.set_metadata(metadata).await {
-                    error!("Failed to set mpris metadata: {e}");
+                if let Err(e) = player.set_metadata(metadata).await {
+                    error!("Failed to set metadata: {e}");
                 }
-            }
-        });
-    }
-
-    pub fn set_status_callback<F: Fn(bool) + 'static>(&self, callback: F) {
-        self.status_callback
-            .borrow_mut()
-            .replace(Box::new(callback));
-    }
-
-    pub fn set_raise_callback<F: Fn() + 'static>(&self, callback: F) {
-        self.raise_callback.borrow_mut().replace(Box::new(callback));
+            });
+        }
     }
 }
-
-impl ObjectImpl for Mpris {}

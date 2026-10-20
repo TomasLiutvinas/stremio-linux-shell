@@ -6,7 +6,7 @@ use tracing::error;
 
 use crate::{
     app::{
-        config::{APP_ID, APP_NAME, URI_SCHEME},
+        config::URI_SCHEME,
         discord::Discord,
         ipc::{
             self,
@@ -87,17 +87,29 @@ impl ApplicationImpl for Application {
         window.set_underlay(&video);
         window.set_overlay(&webview);
 
+        video.connect_playback_started(clone!(
+            #[weak]
+            mpris,
+            move || {
+                mpris.start();
+            }
+        ));
+
         video.connect_playback_ended(clone!(
             #[weak]
             window,
             #[weak]
             webview,
+            #[weak]
+            mpris,
             move |reason| {
+                mpris.stop();
                 window.enable_idling();
 
+                let error = (reason == "error").then(|| "Stream failed to load".to_string());
                 let message = ipc::create_response(IpcEvent::Mpv(IpcEventMpv::Ended((
                     reason.to_string(),
-                    None,
+                    error,
                 ))));
                 webview.send(&message);
             }
@@ -145,6 +157,9 @@ impl ApplicationImpl for Application {
 
                             let message = ipc::create_response(IpcEvent::Fullscreen(state));
                             webview.send(&message);
+                        }
+                        IpcEvent::InterfaceScale(scale) => {
+                            webview.set_interface_scale(scale);
                         }
                         IpcEvent::MediaStatus(status) => {
                             mpris.set_status(status);
@@ -231,7 +246,7 @@ impl ApplicationImpl for Application {
             #[weak]
             window,
             move || {
-                window.set_visible(true);
+                window.present();
             }
         ));
 
@@ -251,7 +266,7 @@ impl ApplicationImpl for Application {
             }
         ));
 
-        mpris.connect_status(clone!(
+        mpris.connect_paused(clone!(
             #[weak]
             webview,
             move |paused| {
@@ -267,8 +282,6 @@ impl ApplicationImpl for Application {
                 window.activate();
             }
         ));
-
-        mpris.start(APP_ID, APP_NAME);
 
         window.present();
 

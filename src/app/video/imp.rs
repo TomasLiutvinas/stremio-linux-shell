@@ -1,20 +1,22 @@
 use gdk_wayland::{WaylandDisplay, wayland_client::Proxy};
 use gtk::{
     gdk::GLContext,
+    gio::Settings,
     glib::{self, Propagation, Properties, Variant, clone, subclass::Signal},
     prelude::*,
     subclass::prelude::*,
 };
 use libmpv2::{
-    Format, Mpv, SetData,
+    Error, Format, Mpv, SetData,
     events::{Event, PropertyData},
     mpv_end_file_reason,
     render::{OpenGLInitParams, RenderContext, RenderParam, RenderParamApiType},
 };
+use shellexpand::tilde;
 use std::{cell::RefCell, env, os::raw::c_void, sync::OnceLock};
-use tracing::error;
+use tracing::{error, warn};
 
-use crate::spawn_local;
+use crate::{app::config::APP_ID, spawn_local};
 
 fn get_proc_address(_context: &GLContext, name: &str) -> *mut c_void {
     epoxy::get_proc_addr(name) as _
@@ -34,9 +36,12 @@ pub struct Video {
 
 impl Default for Video {
     fn default() -> Self {
-        let log = env::var("RUST_LOG");
-        let msg_level = match log {
-            Ok(scope) => &format!("all={}", scope.as_str()),
+        let msg_level = match env::var("RUST_LOG").as_deref() {
+            Ok("error") => "all=error",
+            Ok("warn") => "all=warn",
+            Ok("info") => "all=info",
+            Ok("debug") => "all=debug",
+            Ok("trace") => "all=trace",
             _ => "all=no",
         };
 
@@ -44,10 +49,25 @@ impl Default for Video {
         gettextrs::setlocale(gettextrs::LocaleCategory::LcNumeric, "C")
             .expect("Failed to set LC_NUMERIC to C");
 
+        let settings = Settings::new(APP_ID);
+        let mpv_config_location = settings.string("mpv-config-location");
+        let config_path = tilde(&mpv_config_location).to_string();
+
         let mpv = Mpv::with_initializer(|init| {
+            if let Err(e) = init.set_property("include", config_path) {
+                warn!("Failed to load config file: {e}");
+            }
+
             init.set_property("vo", "libmpv")?;
             init.set_property("video-timing-offset", "0")?;
             init.set_property("video-sync", "audio")?;
+            // Enable zero-copy hardware decoding by default. mpv otherwise
+            // defaults to software decoding, and the web UI only ever asks for
+            // the copy-back path (`hwdec=auto-copy`, remapped in mod.rs). Our GL
+            // render context is created with the Wayland display, so mpv can use
+            // the EGL/dmabuf interop (VAAPI on Mesa) and keep frames on the GPU.
+            // `auto-safe` falls back to software when no safe interop exists.
+            init.set_property("hwdec", "auto-safe")?;
             init.set_property("terminal", "yes")?;
             init.set_property("msg-level", msg_level)?;
             Ok(())
@@ -68,6 +88,11 @@ impl Video {
         while let Some(result) = self.mpv.borrow().wait_event(0.0) {
             match result {
                 Ok(event) => callback(event),
+                Err(Error::Raw(e)) => {
+                    error!("MPV errored with: {e}");
+                    self.obj()
+                        .emit_by_name::<()>("playback-ended", &[&"error".to_string()]);
+                }
                 Err(e) => error!("Failed to wait for event: {e}"),
             }
         }
@@ -114,6 +139,7 @@ impl ObjectImpl for Video {
                 Signal::builder("property-changed")
                     .param_types([str::static_type(), Variant::static_type()])
                     .build(),
+                Signal::builder("playback-started").build(),
                 Signal::builder("playback-ended")
                     .param_types([str::static_type()])
                     .build(),
@@ -150,6 +176,9 @@ impl WidgetImpl for Video {
                             }
                             EventCallback::Events => {
                                 video.on_event(|event| match event {
+                                    Event::StartFile => {
+                                        object.emit_by_name::<()>("playback-started", &[]);
+                                    }
                                     Event::PropertyChange { name, change, .. } => {
                                         let value = match change {
                                             PropertyData::Str(v) => Some(v.to_variant()),
