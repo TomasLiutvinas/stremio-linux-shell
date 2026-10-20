@@ -77093,7 +77093,7 @@
             converter.destroy(), converters.delete(id), console.log(`hls-converter ${id} destoyed`));
         }), 12e4), router.param("id", (async (req, res, next) => {
             if (!converters.has(req.params.id)) try {
-                const maxAudioChannels = parseInt(req.query.maxAudioChannels, 10), converter = new Converter({
+                const maxAudioChannels = parseInt(req.query.maxAudioChannels, 10), maxBitRate = parseInt(req.query.maxBitRate, 10), trackConcurrency = parseInt(req.query.trackConcurrency, 10), converter = new Converter({
                     ffmpeg: options.ffmpeg,
                     ffprobe: options.ffprobe,
                     id: req.params.id,
@@ -77102,6 +77102,8 @@
                     forceTranscoding: !!req.query.forceTranscoding,
                     profile: req.query.profile || null,
                     maxWidth: req.query.maxWidth || null,
+                    maxBitRate: !isNaN(maxBitRate) && isFinite(maxBitRate) && maxBitRate > 0 ? maxBitRate : null,
+                    trackConcurrency: !isNaN(trackConcurrency) && isFinite(trackConcurrency) && trackConcurrency > 0 ? trackConcurrency : null,
                     videoCodecs: Array.isArray(req.query.videoCodecs) ? req.query.videoCodecs : "string" == typeof req.query.videoCodecs ? [ req.query.videoCodecs ] : null,
                     audioCodecs: Array.isArray(req.query.audioCodecs) ? req.query.audioCodecs : "string" == typeof req.query.audioCodecs ? [ req.query.audioCodecs ] : null
                 });
@@ -79002,7 +79004,7 @@
             super("MasterConverter is destroyed"), this.name = "ConverterDestroyedError";
         }
     }
-    module.exports = function({ffmpeg: ffmpeg, ffprobe: ffprobe, id: id, mediaURL: mediaURL, maxAudioChannels: maxAudioChannels, videoCodecs: videoCodecs, audioCodecs: audioCodecs, forceTranscoding: forceTranscoding, profile: profile, maxWidth: maxWidth}) {
+    module.exports = function({ffmpeg: ffmpeg, ffprobe: ffprobe, id: id, mediaURL: mediaURL, maxAudioChannels: maxAudioChannels, videoCodecs: videoCodecs, audioCodecs: audioCodecs, forceTranscoding: forceTranscoding, profile: profile, maxWidth: maxWidth, maxBitRate: maxBitRate, trackConcurrency: trackConcurrency}) {
         if ("string" != typeof mediaURL || 0 === mediaURL.length) throw new Error("Invalid media url");
         if ("number" == typeof maxAudioChannels && maxAudioChannels <= 0) throw new Error("Invalid audio channels");
         let destroyed = !1;
@@ -79011,7 +79013,8 @@
         };
         maxAudioChannels && (queryData.maxAudioChannels = maxAudioChannels), forceTranscoding && (queryData.forceTranscoding = "1"), 
         Array.isArray(videoCodecs) && (queryData.videoCodecs = videoCodecs), Array.isArray(audioCodecs) && (queryData.audioCodecs = audioCodecs), 
-        profile && (queryData.profile = profile), maxWidth && (queryData.maxWidth = maxWidth);
+        profile && (queryData.profile = profile), maxWidth && (queryData.maxWidth = maxWidth), maxBitRate && (queryData.maxBitRate = maxBitRate), 
+        trackConcurrency && (queryData.trackConcurrency = trackConcurrency);
         const query = querystring.stringify(queryData), probe = {
             mutex: new Mutex(new ConverterDestroyedError),
             value: null,
@@ -79060,8 +79063,9 @@
                 if ("string" != typeof track) throw new Error("Invalid track requested");
                 if (!converters.value[track]) {
                     const trackType = track.replace(/[0-9]/g, "");
-                    Object.keys(converters.value).filter((track => track.startsWith(trackType))).sort(((trackA, trackB) => converters.value[trackB].touched - converters.value[trackA].touched)).slice(userSettings.transcodeTrackConcurrency - 1).forEach((track => {
-                        console.log(`hls-converter ${id} destroying track ${track} due to passing track concurrency of ${userSettings.transcodeTrackConcurrency}`), 
+                    const allowedTrackConcurrency = trackConcurrency || userSettings.transcodeTrackConcurrency;
+                    Object.keys(converters.value).filter((track => track.startsWith(trackType))).sort(((trackA, trackB) => converters.value[trackB].touched - converters.value[trackA].touched)).slice(allowedTrackConcurrency - 1).forEach((track => {
+                        console.log(`hls-converter ${id} destroying track ${track} due to passing track concurrency of ${allowedTrackConcurrency}`), 
                         converters.value[track].destroy(), delete converters.value[track];
                     })), converters.value[track] = {
                         mutex: new Mutex(new ConverterDestroyedError),
@@ -79091,6 +79095,7 @@
                         forceTranscoding: forceTranscoding,
                         profile: profile,
                         maxWidth: maxWidth,
+                        maxBitRate: maxBitRate,
                         stream: stream,
                         format: format,
                         samples: samples[stream.index] ? samples[stream.index].samples : [],
@@ -82022,7 +82027,7 @@
             super("Segment is canceled"), this.name = "SegmentCanceledError";
         }
     }
-    module.exports = function({ffmpeg: ffmpeg, mediaURL: mediaURL, maxAudioChannels: maxAudioChannels, videoCodecs: videoCodecs, audioCodecs: audioCodecs, forceTranscoding: forceTranscoding, profile: profile, maxWidth: maxWidth, stream: stream, format: format, samples: samples, sampleDuration: sampleDuration, query: query}) {
+    module.exports = function({ffmpeg: ffmpeg, mediaURL: mediaURL, maxAudioChannels: maxAudioChannels, videoCodecs: videoCodecs, audioCodecs: audioCodecs, forceTranscoding: forceTranscoding, profile: profile, maxWidth: maxWidth, maxBitRate: maxBitRate, stream: stream, format: format, samples: samples, sampleDuration: sampleDuration, query: query}) {
         let destroyed = !1;
         const initMutex = new Mutex(new ConverterDestroyedError);
         let initError = null, initSegmentBuffer = null, mediaSegments = null, timescale = null;
@@ -82074,7 +82079,8 @@
                             },
                             track: `${stream.track}${stream.id}`,
                             profile: profile,
-                            maxWidth: maxWidth
+                            maxWidth: maxWidth,
+                            maxBitRate: maxBitRate
                         };
                     } else convertOptions = {
                         ffmpeg: ffmpeg,
@@ -82084,7 +82090,8 @@
                         [track]: stream,
                         track: `${stream.track}${stream.id}`,
                         profile: profile,
-                        maxWidth: maxWidth
+                        maxWidth: maxWidth,
+                        maxBitRate: maxBitRate
                     };
                     if (convertProcess = spawnConvertProcess(convertOptions), await convertProcess.create(), 
                     initSegmentBuffer = await mp4.init(convertProcess.stream), !initMutex.isLocked()) throw new ConverterDestroyedError;
@@ -83266,7 +83273,7 @@
     }
     module.exports = function(options = {}) {
         !options.profile && userSettings.transcodeHardwareAccel && userSettings.transcodeProfile && (options.profile = userSettings.transcodeProfile);
-        const cpuCores = (os.cpus() || []).length, audioChannels = options.audio ? options.audio.override && "number" == typeof options.audio.override.channels ? options.audio.override.channels : options.audio.channels || 2 : 2, videoBitRate = !!(options.video || {}).transcode && bitrate.video(options.video, options.video.codec, "libx264", userSettings.transcodeMaxBitRate), audioBitRate = !!(options.audio || {}).transcode && bitrate.audio(options.audio, "aac", audioChannels), encodeThreads = cpuCores ? cpuCores * userSettings.transcodeHorsepower : 0;
+        const cpuCores = (os.cpus() || []).length, audioChannels = options.audio ? options.audio.override && "number" == typeof options.audio.override.channels ? options.audio.override.channels : options.audio.channels || 2 : 2, videoBitRate = !!(options.video || {}).transcode && bitrate.video(options.video, options.video.codec, "libx264", options.maxBitRate || userSettings.transcodeMaxBitRate), audioBitRate = !!(options.audio || {}).transcode && bitrate.audio(options.audio, "aac", audioChannels), encodeThreads = cpuCores ? cpuCores * userSettings.transcodeHorsepower : 0;
         let accelConfig = {
             inputArgs: [],
             maxWidth: options.maxWidth || userSettings.transcodeMaxWidth,
@@ -83289,7 +83296,13 @@
             encodeThreads: isNaN(encodeThreads) ? 0 : encodeThreads,
             colorSpace: "bt709"
         };
-        accelConfig = applyProfile(options.profile, accelConfig, options);
+        if (accelConfig = applyProfile(options.profile, accelConfig, options), (options.video || {}).transcode && (options.video.isHdr || options.video.isDoVi)) {
+            const hdrFilters = [ "format=p010le" ];
+            options.video.width > accelConfig.maxWidth && hdrFilters.push(`scale=${accelConfig.maxWidth}:-2:flags=lanczos`), 
+            hdrFilters.push("zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709", "tonemap=tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv", "format=yuv420p"), 
+            accelConfig.extraSwFilters = (accelConfig.extraSwFilters || []).concat(hdrFilters), accelConfig.maxWidth = Number.MAX_SAFE_INTEGER, 
+            accelConfig.scale = !1;
+        }
         const filters = () => (() => {
             const filters = [ options.video.override ? "string" == typeof options.video.override.embeddedSubtitlesId ? `subtitles='${escapeFiltergraphValue(options.mediaURL)}':stream_index=${options.video.override.embeddedSubtitlesId}` : "string" == typeof options.video.override.externalSubtitlesUrl ? `subtitles='${escapeFiltergraphValue(options.video.override.externalSubtitlesUrl)}'` : null : null, options.blank ? "tpad=stop=-1" : null ].concat(accelConfig.extraSwFilters || []).filter((v => null !== v));
             return accelConfig.scale || (options.video.width > accelConfig.maxWidth && filters.push(`${accelConfig.scalePrefix}scale=${accelConfig.maxWidth}:${accelConfig.resizeHeightAuto}${accelConfig.scaleExtra}`), 
@@ -83301,7 +83314,7 @@
             return filters.unshift(`setparams=color_primaries=${accelConfig.colorSpace}:color_trc=${accelConfig.colorSpace}:colorspace=${accelConfig.colorSpace}`), 
             filters.filter((v => null !== v));
         })());
-        return options.args = [ ...(options.video || {}).transcode && accelConfig.inputArgs ? accelConfig.inputArgs : [], "-fflags", "+genpts", "-noaccurate_seek", "-seek_timestamp", "1", "-copyts", ...options.format && options.format.name.includes("matroska") ? [ "-seek2any", "1" ] : [], ..."number" == typeof options.time ? [ "-ss", options.time ] : [], "-i", options.mediaURL, "-threads", accelConfig.encodeThreads + "", ..."number" == typeof options.time && (options.audio || options.video && options.video.transcode) ? [ "-ss", options.time, "-output_ts_offset", options.time ] : [], "-max_muxing_queue_size", "2048", "-ignore_unknown", "-map_metadata", "-1", "-map_chapters", "-1", "-map", "-0:d?", "-map", "-0:t?", ...options.video ? [ "-map", `v:${options.video.id}`, ...options.video.transcode ? [ ...filters().length ? [ "-vf", filters().join(",") ] : [], "-c:v", accelConfig.encoderH264, "-preset:v", accelConfig.videoPreset, "-profile:v", "high", "-tune:v", accelConfig.videoTune, ...accelConfig.noH264Level ? [] : [ "-level", accelConfig.levelH264 ], ...options.video.override && "number" == typeof options.video.override.frameRate ? [ "-vsync", "cfr", "-r:v", options.video.override.frameRate, ..."number" == typeof options.segmentDuration ? [ "-sc_threshold", "0", "-g", options.video.override.frameRate * options.segmentDuration, "-keyint_min", options.video.override.frameRate * options.segmentDuration ] : [] ] : [], ...accelConfig.extraVideoOutputArgs ? accelConfig.extraVideoOutputArgs.map((v => "{bitrate}" === v ? accelConfig.videoBitRate + "" : "{bufsize}" === v ? 2 * accelConfig.videoBitRate + "" : v)) : [] ] : [ "-c:v", "copy", "-force_key_frames:v", "source" ] ] : [ "-map", "-0:v?" ], ...options.audio ? [ "-map", `a:${options.audio.id}`, ...options.audio.transcode ? [ "-c:a", accelConfig.encoderAAC, "-filter:a", "apad", "-async", 1, ...options.audio.override && "number" == typeof options.audio.override.channels ? [ "-ac:a", options.audio.override.channels, "-ab", `${accelConfig.audioBitRate}` ] : [], ...options.audio.override && "number" == typeof options.audio.override.sampleRate ? [ "-ar:a", options.audio.override.sampleRate ] : [] ] : [ "-c:a", "copy", ..."aac" === options.audio.codec ? [ "-bsf:a", "aac_adtstoasc" ] : [] ] ] : [ "-map", "-0:a?" ], ...options.subtitle ? [ "-map", `s:${options.subtitle.id}` ] : [ "-map", "-0:s?" ], ..."number" == typeof options.segmentDuration && (options.audio || options.video && options.video.transcode) ? [ "-frag_duration", Math.floor(1e3 * options.segmentDuration * 1e3) ] : [], ..."number" == typeof options.sequenceNumber && (options.video || options.audio) ? [ "-fragment_index", options.sequenceNumber ] : [], ...options.video ? [ "-movflags", "frag_keyframe+empty_moov+default_base_moof+delay_moov+dash" ] : options.audio ? [ "-movflags", "empty_moov+default_base_moof+delay_moov+dash" ] : [], ...options.video || options.audio ? [ "-use_editlist", "1", "-f", "mp4" ] : options.subtitle ? [ "-f", "webvtt" ] : [] ], 
+        return options.args = [ ...(options.video || {}).transcode && accelConfig.inputArgs ? accelConfig.inputArgs : [], "-fflags", "+genpts", "-noaccurate_seek", "-seek_timestamp", "1", "-copyts", ...options.format && options.format.name.includes("matroska") ? [ "-seek2any", "1" ] : [], ..."number" == typeof options.time ? [ "-ss", options.time ] : [], "-i", options.mediaURL, "-threads", accelConfig.encodeThreads + "", ..."number" == typeof options.time && (options.audio || options.video && options.video.transcode) ? [ "-ss", options.time, "-output_ts_offset", options.time ] : [], "-max_muxing_queue_size", "2048", "-ignore_unknown", "-map_metadata", "-1", "-map_chapters", "-1", "-map", "-0:d?", "-map", "-0:t?", ...options.video ? [ "-map", `v:${options.video.id}`, ...options.video.transcode ? [ ...filters().length ? [ "-vf", filters().join(",") ] : [], "-c:v", accelConfig.encoderH264, "-preset:v", accelConfig.videoPreset, "-profile:v", "high", "-tune:v", accelConfig.videoTune, ...accelConfig.noH264Level ? [] : [ "-level", accelConfig.levelH264 ], ...options.video.override && "number" == typeof options.video.override.frameRate ? [ "-fps_mode", "cfr", "-r:v", options.video.override.frameRate, ..."number" == typeof options.segmentDuration ? [ "-sc_threshold", "0", "-g", options.video.override.frameRate * options.segmentDuration, "-keyint_min", options.video.override.frameRate * options.segmentDuration ] : [] ] : [], ...accelConfig.extraVideoOutputArgs ? accelConfig.extraVideoOutputArgs.map((v => "{bitrate}" === v ? accelConfig.videoBitRate + "" : "{bufsize}" === v ? 2 * accelConfig.videoBitRate + "" : v)) : [] ] : [ "-c:v", "copy", "-force_key_frames:v", "source" ] ] : [ "-map", "-0:v?" ], ...options.audio ? [ "-map", `a:${options.audio.id}`, ...options.audio.transcode ? [ "-c:a", accelConfig.encoderAAC, "-filter:a", "apad", "-async", 1, ...options.audio.override && "number" == typeof options.audio.override.channels ? [ "-ac:a", options.audio.override.channels, "-ab", `${accelConfig.audioBitRate}` ] : [], ...options.audio.override && "number" == typeof options.audio.override.sampleRate ? [ "-ar:a", options.audio.override.sampleRate ] : [] ] : [ "-c:a", "copy", ..."aac" === options.audio.codec ? [ "-bsf:a", "aac_adtstoasc" ] : [] ] ] : [ "-map", "-0:a?" ], ...options.subtitle ? [ "-map", `s:${options.subtitle.id}` ] : [ "-map", "-0:s?" ], ..."number" == typeof options.segmentDuration && (options.audio || options.video && options.video.transcode) ? [ "-frag_duration", Math.floor(1e3 * options.segmentDuration * 1e3) ] : [], ..."number" == typeof options.sequenceNumber && (options.video || options.audio) ? [ "-fragment_index", options.sequenceNumber ] : [], ...options.video ? [ "-movflags", "frag_keyframe+empty_moov+default_base_moof+delay_moov+dash" ] : options.audio ? [ "-movflags", "empty_moov+default_base_moof+delay_moov+dash" ] : [], ...options.video || options.audio ? [ "-use_editlist", "1", "-f", "mp4" ] : options.subtitle ? [ "-f", "webvtt" ] : [] ], 
         new ffmpeg(options);
     };
 }, function(module, exports) {

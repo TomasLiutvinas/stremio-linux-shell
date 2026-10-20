@@ -1,4 +1,4 @@
-use std::{cell::Cell, fs::File, os::fd::AsFd, sync::Arc};
+use std::{cell::Cell, env, fs::File, os::fd::AsFd, sync::Arc};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -13,7 +13,7 @@ use ashpd::{
     enumflags2::BitFlags,
 };
 use gtk::{
-    gio::Settings,
+    gio::{self, Settings},
     glib::{self, subclass::InitializingObject},
     prelude::WidgetExt,
 };
@@ -23,7 +23,6 @@ use tracing::error;
 use crate::{
     app::{config::APP_ID, ext::ASHPDExt},
     spawn_local,
-    utils::IS_DESKTOP_KDE,
 };
 
 #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
@@ -32,8 +31,6 @@ use crate::{
 pub struct Window {
     #[property(get, set)]
     decorations: Cell<bool>,
-    #[template_child]
-    header: TemplateChild<adw::HeaderBar>,
     #[template_child]
     pub overlay: TemplateChild<gtk::Overlay>,
     pub inhibit_request: Arc<Mutex<Option<Request<()>>>>,
@@ -100,6 +97,15 @@ impl Window {
     }
 
     pub fn open_uri(&self, uri: String) {
+        // Native desktop handlers support our external-player actions directly.
+        // Keep the portal for Flatpak builds.
+        if env::var_os("FLATPAK_ID").is_none() {
+            gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+                .map_err(|e| error!("Failed to open uri with the desktop handler: {e}"))
+                .ok();
+            return;
+        }
+
         if let Ok(uri) = Uri::parse(&uri) {
             let identifier = self.window_identifier();
 
@@ -129,8 +135,8 @@ impl Window {
         }
     }
 
-    pub fn show_header(&self, state: bool) {
-        self.header.set_visible(self.decorations.get() && state);
+    pub fn show_header(&self, _state: bool) {
+        // The custom window has no header; retain the fullscreen hook.
     }
 }
 
@@ -153,14 +159,6 @@ impl ObjectSubclass for Window {
 impl ObjectImpl for Window {
     fn constructed(&self) {
         self.parent_constructed();
-
-        let settings = Settings::new(APP_ID);
-
-        let kde_theme_enabled = settings.boolean("kde-theme");
-
-        if *IS_DESKTOP_KDE && kde_theme_enabled {
-            self.header.add_css_class("kde");
-        }
 
         if cfg!(debug_assertions) {
             self.obj().add_css_class("devel");

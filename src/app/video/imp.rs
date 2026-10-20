@@ -44,6 +44,10 @@ impl Default for Video {
             Ok("trace") => "all=trace",
             _ => "all=no",
         };
+        let streamer_socket = env::var("STREMIO_STREAMER_MPV_SOCKET").unwrap_or_else(|_| {
+            let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{runtime_dir}/stremio-streamer-mpv.sock")
+        });
 
         // Required for libmpv to work alongside GTK
         gettextrs::setlocale(gettextrs::LocaleCategory::LcNumeric, "C")
@@ -70,6 +74,7 @@ impl Default for Video {
             init.set_property("hwdec", "auto-safe")?;
             init.set_property("terminal", "yes")?;
             init.set_property("msg-level", msg_level)?;
+            init.set_property("input-ipc-server", streamer_socket.as_str())?;
             Ok(())
         })
         .expect("Failed to create mpv");

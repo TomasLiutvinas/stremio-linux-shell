@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+repo_dir=/mnt/space/linux/repos/stremio-linux-shell
+web_dir=/mnt/space/linux/repos/stremio-web
+
+node "$web_dir/local_server.js" &
+web_pid=$!
+cleanup() {
+    kill "$web_pid" 2>/dev/null || true
+    wait "$web_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+sleep 0.2
+env LC_NUMERIC=C GSETTINGS_SCHEMA_DIR="$repo_dir/target/schemas" STREMIO_LOCALEDIR="$repo_dir/target/locale" SERVER_PATH="$repo_dir/data/server.js" \
+    "$repo_dir/target/release/stremio-linux-shell" \
+    --url http://127.0.0.1:8080/ "$@"
